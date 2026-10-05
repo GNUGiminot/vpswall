@@ -1,7 +1,43 @@
+# Build output and local executables
 /dist/
 /vpswall-*.zip
 /SHA256SUMS.txt
-/vpswall.exe
 /vpswall
-/vpswall-demo.exe
-/tests/*.log
+*.exe
+*.test
+*.log
+
+# Credentials and local environment
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+.ssh/
+
+# Runtime state and backups (never publish server data)
+/state/
+/backups/
+config.json
+windows.json
+pending.json
+web-auth.json
+certbot.json
+certbot-original-timers.json
+manager.json
+manager.lock
+owned.json
+change.json
+/managed-backups/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
