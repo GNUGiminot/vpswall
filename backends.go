@@ -16,7 +16,8 @@ import (
 
 var zonePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 var binaryPaths = map[string][]string{
-	"ufw": {"/usr/sbin/ufw"}, "systemctl": {"/usr/bin/systemctl"}, "systemd-run": {"/usr/bin/systemd-run"}, "cp": {"/usr/bin/cp"},
+	"sshd": {"/usr/sbin/sshd"},
+	"ufw":  {"/usr/sbin/ufw"}, "systemctl": {"/usr/bin/systemctl"}, "systemd-run": {"/usr/bin/systemd-run"}, "cp": {"/usr/bin/cp"},
 	"ss": {"/usr/bin/ss", "/usr/sbin/ss"}, "journalctl": {"/usr/bin/journalctl"},
 	"firewall-cmd": {"/usr/bin/firewall-cmd"}, "firewall-offline-cmd": {"/usr/bin/firewall-offline-cmd"},
 	"nft": {"/usr/sbin/nft", "/sbin/nft"}, "iptables": {"/usr/sbin/iptables", "/sbin/iptables"}, "ip6tables": {"/usr/sbin/ip6tables", "/sbin/ip6tables"},

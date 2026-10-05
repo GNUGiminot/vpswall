@@ -194,6 +194,7 @@ type managerChange struct {
 	Deadline    time.Time     `json:"deadline"`
 	Ready       bool          `json:"ready"`
 	Description string        `json:"description"`
+	SSHPort     string        `json:"ssh_port,omitempty"`
 }
 type manager struct {
 	root, system, runtimeDir string
@@ -278,6 +279,11 @@ func (m *manager) pending() (*managerChange, error) {
 	}
 	if e = validateConfig(p.Before); e != nil {
 		return nil, e
+	}
+	if p.SSHPort != "" {
+		if e = validateSSHPort(p.SSHPort); e != nil {
+			return nil, e
+		}
 	}
 	return &p, nil
 }
@@ -465,6 +471,9 @@ func (m *manager) saveBackup() (string, error) {
 	return id, e
 }
 func (m *manager) change(description string, after managerConfig) (*managerChange, error) {
+	return m.changeSSH(description, after, "")
+}
+func (m *manager) changeSSH(description string, after managerConfig, sshPort string) (*managerChange, error) {
 	var result *managerChange
 	e := m.withLock(func() error {
 		p, e := m.pending()
@@ -490,11 +499,16 @@ func (m *manager) change(description string, after managerConfig) (*managerChang
 		if e = validateConfig(after); e != nil {
 			return e
 		}
+		if sshPort != "" {
+			if e = m.prepareSSH(sshPort); e != nil {
+				return e
+			}
+		}
 		token, e := newID()
 		if e != nil {
 			return e
 		}
-		p = &managerChange{Token: token, Before: before, SSH: m.ssh, Deadline: m.now().Add(120 * time.Second), Description: description}
+		p = &managerChange{Token: token, Before: before, SSH: m.ssh, SSHPort: sshPort, Deadline: m.now().Add(120 * time.Second), Description: description}
 		if e = writeJSON(m.path("change.json"), p); e != nil {
 			return e
 		}
@@ -514,6 +528,9 @@ func (m *manager) change(description string, after managerConfig) (*managerChang
 		}
 		if e = timed.synchronize(after, true); e == nil {
 			e = writeJSON(m.path("manager.json"), after)
+		}
+		if e == nil && sshPort != "" {
+			e = timed.startSSH(sshPort)
 		}
 		if e != nil {
 			r := m.rollbackLocked()
@@ -537,6 +554,11 @@ func (m *manager) rollbackLocked() error {
 	p, e := m.pending()
 	if e != nil || p == nil {
 		return e
+	}
+	if p.SSHPort != "" {
+		if e = m.removeSSH(p.SSHPort); e != nil {
+			return e
+		}
 	}
 	if e = m.synchronize(p.Before, true); e != nil {
 		return e
@@ -569,6 +591,12 @@ func (m *manager) confirm(token string) error {
 		}
 		if p.SSH != "" && (m.ssh == "" || m.ssh == p.SSH) {
 			return errors.New("подтвердите из нового SSH-подключения")
+		}
+		if p.SSHPort != "" {
+			fields := strings.Fields(m.ssh)
+			if len(fields) != 4 || fields[3] != p.SSHPort {
+				return errors.New("подтвердите из подключения на новый SSH-порт " + p.SSHPort)
+			}
 		}
 		if e = os.Remove(m.path("change.json")); e != nil {
 			return e

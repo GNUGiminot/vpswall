@@ -7,10 +7,149 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestIntegrationSSHMigration(t *testing.T) {
+	requireLab(t)
+	resetKernel(t)
+	if out, e := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	root := t.TempDir()
+	key := filepath.Join(root, "client")
+	if out, e := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	if out, e := exec.Command("ssh-keygen", "-A").CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	os.MkdirAll("/run/sshd", 0755)
+	config := "/etc/ssh/sshd_config"
+	body := "HostKey /etc/ssh/ssh_host_ed25519_key\nAuthorizedKeysFile " + key + ".pub\nPermitRootLogin prohibit-password\nPasswordAuthentication no\nStrictModes no\nUsePAM no\n"
+	if e := os.WriteFile(config, []byte(body), 0600); e != nil {
+		t.Fatal(e)
+	}
+	processes := map[string]*exec.Cmd{}
+	start := func(port string) error {
+		cmd := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", config, "-p", port, "-o", "PidFile="+filepath.Join(root, "pid-"+port))
+		log, e := os.Create(filepath.Join(root, "sshd-"+port+".log"))
+		if e != nil {
+			return e
+		}
+		defer log.Close()
+		cmd.Stderr = log
+		if e := cmd.Start(); e != nil {
+			return e
+		}
+		processes[port] = cmd
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			c, e := net.DialTimeout("tcp", "127.0.0.1:"+port, 200*time.Millisecond)
+			if e == nil {
+				c.Close()
+				return nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		data, _ := os.ReadFile(log.Name())
+		return fmt.Errorf("sshd did not listen: %s", data)
+	}
+	stop := func(port string) {
+		if cmd := processes[port]; cmd != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+			delete(processes, port)
+		}
+	}
+	t.Cleanup(func() {
+		for port := range processes {
+			stop(port)
+		}
+	})
+	if e := start("22"); e != nil {
+		t.Fatal(e)
+	}
+	m := liveManager(t, "nftables")
+	m.ssh = "127.0.0.1 1000 127.0.0.1 22"
+	m.run = func(name string, args ...string) (string, error) {
+		if name == "systemd-run" {
+			return "", nil
+		}
+		if name == "systemctl" {
+			if args[0] == "is-enabled" {
+				return "enabled", nil
+			}
+			if args[0] == "is-active" {
+				return "active", nil
+			}
+			if args[0] == "enable" {
+				p := strings.TrimSuffix(strings.TrimPrefix(args[len(args)-1], "vpswall-ssh-"), ".service")
+				return "", start(p)
+			}
+			if args[0] == "disable" {
+				p := strings.TrimSuffix(strings.TrimPrefix(args[len(args)-1], "vpswall-ssh-"), ".service")
+				stop(p)
+			}
+			return "", nil
+		}
+		return managerCommand(name, args...)
+	}
+	login := func(port string) string {
+		t.Helper()
+		out, e := exec.Command("ssh", "-F", "/dev/null", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-p", port, "root@127.0.0.1", "printf '%s' \"$SSH_CONNECTION\"").CombinedOutput()
+		if e != nil {
+			t.Fatal(e, string(out))
+		}
+		return string(out)
+	}
+	for i, confirm := range []bool{false, true} {
+		port := strconv.Itoa(2222 + i)
+		c, _ := m.config()
+		c, e := keepSSH(c, m.ssh)
+		if e != nil {
+			t.Fatal(e)
+		}
+		r, _ := newManaged("allow", "tcp", port, "127.0.0.1", "SSH")
+		r.Priority = 0
+		c.Rules = append(c.Rules, r)
+		p, e := m.changeSSH("SSH native test", c, port)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if out, e := exec.Command("systemd-analyze", "verify", m.sshUnitPath(port)).CombinedOutput(); e != nil {
+			t.Fatal(e, string(out))
+		}
+		actual := login(port)
+		if !strings.HasSuffix(actual, " "+port) {
+			t.Fatal(actual)
+		}
+		login("22") // original listener and key login remain available
+		if confirm {
+			m.ssh = actual
+			if e = m.confirm(p.Token); e != nil {
+				t.Fatal(e)
+			}
+			login(port)
+		} else {
+			m.ssh = login("22")
+			if e = m.confirm(p.Token); e == nil {
+				t.Fatal("old port accepted")
+			}
+			if e = m.rollback(); e != nil {
+				t.Fatal(e)
+			}
+			if c, e := net.DialTimeout("tcp", "127.0.0.1:"+port, 300*time.Millisecond); e == nil {
+				c.Close()
+				t.Fatal("new listener retained")
+			}
+			login("22")
+		}
+	}
+}
 
 // Live tests are strictly opt-in and require both a private root and a separate netns.
 func requireLab(t *testing.T) {

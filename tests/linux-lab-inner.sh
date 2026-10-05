@@ -19,7 +19,7 @@ printf '#!/bin/sh\nexit 101\n' > "$task_root/rootfs/usr/sbin/policy-rc.d"
 chmod 0755 "$task_root/rootfs/usr/sbin/policy-rc.d"
 touch "$task_root/rootfs/VPSWALL_ISOLATED_ROOT"
 chroot "$task_root/rootfs" /usr/bin/apt-get update -qq > "$source_dir/tests/linux-lab-packages.log" 2>&1
-if ! chroot "$task_root/rootfs" /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y -qq ufw nftables iptables firewalld >> "$source_dir/tests/linux-lab-packages.log" 2>&1; then
+if ! chroot "$task_root/rootfs" /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y -qq ufw nftables iptables firewalld openssh-server >> "$source_dir/tests/linux-lab-packages.log" 2>&1; then
     tail -n 30 "$source_dir/tests/linux-lab-packages.log"
     exit 1
 fi

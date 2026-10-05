@@ -156,7 +156,13 @@ func (u *uiModel) populate() {
 		if u.config.Enabled {
 			label = "Выключить"
 		}
-		u.items = []uiItem{{label + " выбранный экран", "При включении добавляется разрешение текущего SSH", "toggle", ""}, {"Запретить прочий входящий трафик", "Сохранить существующие разрешения и правила VPSWall", "policy", "deny"}, {"Разрешить прочий входящий трафик", "Для nftables/iptables: возврат к базовой политике системы", "policy", "allow"}, {"Подтвердить изменение", "Из нового SSH-подключения с выданным кодом", "confirm", ""}, {"Отменить изменение", "Восстановить настройки VPSWall до изменения", "rollback", ""}}
+		u.items = []uiItem{{label + " выбранный экран", "Сначала выбор: оставить SSH-порт или сменить", "toggle", ""}, {"Запретить прочий входящий трафик", "Сохранить существующие разрешения и правила VPSWall", "policy", "deny"}, {"Разрешить прочий входящий трафик", "Для nftables/iptables: возврат к базовой политике системы", "policy", "allow"}, {"SSH-порт", "Оставить текущий открытым или перейти на новый", "ssh-menu", ""}, {"Подтвердить изменение", "Из нового SSH-подключения с выданным кодом", "confirm", ""}, {"Отменить изменение", "Восстановить настройки VPSWall до изменения", "rollback", ""}}
+	case "ssh-choice":
+		port := "текущий"
+		if r, e := sshRule(u.m.ssh); e == nil {
+			port = r.Port
+		}
+		u.items = []uiItem{{"Оставить " + port + " открытым", "По умолчанию; SSH и старый порт сохраняются", "ssh-keep", ""}, {"Перейти на новый SSH-порт", "Сначала новый доступ; закрытие старого — отдельно", "ssh-new", ""}}
 	case "diagnostics":
 		u.items = []uiItem{{"Все правила", "Конфигурация выбранного firewall", "raw", ""}, {"Слушающие порты", "Порты TCP/UDP и процессы — это не проверка извне", "ports", ""}, {"Журнал ядра", "Последние события сетевого экрана", "kernel-log", ""}, {"Планировщик", "Состояние worker, timers и ошибок", "worker-log", ""}}
 	case "history":
@@ -251,6 +257,31 @@ func (u *uiModel) submitForm() error {
 	}
 	m := u.m
 	switch u.formKind {
+	case "ssh-port":
+		port := values[0]
+		if e := validateSSHPort(port); e != nil {
+			return e
+		}
+		c, e := keepSSH(u.config, m.ssh)
+		if e != nil {
+			return e
+		}
+		old, _ := sshRule(m.ssh)
+		if port == old.Port {
+			return errorsNew("укажите другой порт или выберите «Оставить открытым»")
+		}
+		c.Enabled = true
+		r, e := newManaged("allow", "tcp", port, old.Source, "SSH · новый порт")
+		if e != nil {
+			return e
+		}
+		r.Priority = 0
+		r.AutoSSH = true
+		c.Rules = append(c.Rules, r)
+		u.review("Перейти на SSH-порт "+port+"?", "Будет открыт новый порт и запущен отдельный OpenSSH listener\nс текущими настройками авторизации. Ключи и пароли не меняются.\nСтарый порт "+old.Port+" остаётся открытым.\n\nВойдите: ssh -p "+port+" USER@SERVER\nПодтвердите из этого подключения за 120 секунд.\nБез подтверждения новый listener и его разрешение снимаются.\nПорт также должен быть открыт в панели хостинга.", "home", func() (string, error) {
+			p, e := m.changeSSH("Новый SSH-порт "+port+"; старый "+old.Port+" сохраняется", c, port)
+			return "Войдите через ssh -p " + port + " USER@SERVER\n\n" + changeMessage(p), e
+		})
 	case "rule":
 		action := map[string]string{"разрешить": "allow", "запретить": "deny", "отклонить": "reject"}[values[0]]
 		r, e := newManaged(action, values[1], values[2], values[3], values[5])
@@ -397,31 +428,26 @@ func (u *uiModel) activate() tea.Cmd {
 		c := u.config
 		return u.operation("Читаю правила", u.screen, func() (string, error) { return m.rawStatus(c) })
 	case "toggle":
+		if !u.config.Enabled {
+			u.open("ssh-choice")
+			return nil
+		}
 		c := u.config
-		c.Rules = append([]managedRule{}, c.Rules...)
-		c.Enabled = !c.Enabled
-		if c.Enabled {
-			r, e := sshRule(m.ssh)
-			if e != nil {
-				u.errorText = e.Error()
-				return nil
-			}
-			r.Priority = 0
-			present := false
-			for _, old := range c.Rules {
-				if old.Action == r.Action && old.Port == r.Port && old.Protocol == r.Protocol && old.Source == r.Source {
-					present = true
-				}
-			}
-			if !present {
-				c.Rules = append(c.Rules, r)
-			}
+		c.Enabled = false
+		u.configReview("Выключить выбранный экран", c)
+	case "ssh-menu":
+		u.open("ssh-choice")
+	case "ssh-keep":
+		c, e := keepSSH(u.config, m.ssh)
+		if e != nil {
+			u.errorText = e.Error()
+			return nil
 		}
-		text := "Выключить выбранный экран"
-		if c.Enabled {
-			text = "Включить выбранный экран и сохранить доступ из текущего SSH"
-		}
-		u.configReview(text, c)
+		c.Enabled = true
+		r, _ := sshRule(m.ssh)
+		u.configReview("Оставить SSH-порт "+r.Port+" открытым и включить firewall. Настройки SSH не меняются.", c)
+	case "ssh-new":
+		u.form("ssh-port", "", []uiField{field("Новый SSH-порт", "2222")})
 	case "policy":
 		c := u.config
 		c.Policy = item.id
@@ -637,6 +663,8 @@ func screenTitle(s string) string {
 		return "Выбор сетевого экрана"
 	case "settings":
 		return "Политика и включение"
+	case "ssh-choice":
+		return "SSH · сохранить доступ"
 	case "diagnostics":
 		return "Диагностика"
 	case "history":
