@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 const executable = "/usr/local/bin/vpswall"
 const rollbackSeconds = 120
 

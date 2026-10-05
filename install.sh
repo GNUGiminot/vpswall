@@ -66,4 +66,6 @@ chmod 0644 /etc/systemd/system/vpswall-recover.service /etc/systemd/system/vpswa
 systemctl daemon-reload
 systemctl enable vpswall-recover.service
 systemctl enable --now vpswall-worker.timer
+# Restart an existing web panel after atomic binary update; never enable it here.
+systemctl try-restart vpswall-web.service 2>/dev/null || true
 echo 'VPSWall installed. Start: sudo --preserve-env=SSH_CONNECTION vpswall'

@@ -474,6 +474,9 @@ func (m *manager) change(description string, after managerConfig) (*managerChang
 	return m.changeSSH(description, after, "")
 }
 func (m *manager) changeSSH(description string, after managerConfig, sshPort string) (*managerChange, error) {
+	return m.changeChecked(description, after, sshPort, "")
+}
+func (m *manager) changeChecked(description string, after managerConfig, sshPort, revision string) (*managerChange, error) {
 	var result *managerChange
 	e := m.withLock(func() error {
 		p, e := m.pending()
@@ -489,6 +492,9 @@ func (m *manager) changeSSH(description string, after managerConfig, sshPort str
 		before, e := m.config()
 		if e != nil {
 			return e
+		}
+		if revision != "" && configRevision(before) != revision {
+			return errors.New("правила изменились в другом сеансе; обновите страницу")
 		}
 		if before.Backend == "" {
 			return errors.New("выберите сетевой экран")

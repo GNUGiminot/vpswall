@@ -105,6 +105,7 @@ func (u *uiModel) populate() {
 			{"Политика и включение", "Разрешить или запретить прочий входящий трафик", "settings", ""},
 			{"Диагностика", "Все правила, слушающие порты и журнал", "diagnostics", ""},
 			{"Копии и история", "Сохранить или восстановить правила VPSWall", "history", ""},
+			{"Веб-панель", "Локальный сервис, SSH-туннель и токен доступа", "web", ""},
 		}
 	case "backend":
 		for _, b := range []string{"ufw", "firewalld", "nftables", "iptables"} {
@@ -163,6 +164,8 @@ func (u *uiModel) populate() {
 			port = r.Port
 		}
 		u.items = []uiItem{{"Оставить " + port + " открытым", "По умолчанию; SSH и старый порт сохраняются", "ssh-keep", ""}, {"Перейти на новый SSH-порт", "Сначала новый доступ; закрытие старого — отдельно", "ssh-new", ""}}
+	case "web":
+		u.items = []uiItem{{"Включить веб-сервис", "Только 127.0.0.1:8090; systemd, без открытого внешнего порта", "web-enable", ""}, {"Получить токен", "На 8 часов; предыдущий токен станет недействительным", "web-token", ""}, {"Отключить веб-сервис", "Остановить service и отозвать токен", "web-disable", ""}}
 	case "diagnostics":
 		u.items = []uiItem{{"Все правила", "Конфигурация выбранного firewall", "raw", ""}, {"Слушающие порты", "Порты TCP/UDP и процессы — это не проверка извне", "ports", ""}, {"Журнал ядра", "Последние события сетевого экрана", "kernel-log", ""}, {"Планировщик", "Состояние worker, timers и ошибок", "worker-log", ""}}
 	case "history":
@@ -384,7 +387,7 @@ func (u *uiModel) activate() tea.Cmd {
 	item := u.items[u.cursor]
 	m := u.m
 	switch item.key {
-	case "rules", "windows", "certbot", "backend", "settings", "diagnostics", "history":
+	case "rules", "windows", "certbot", "backend", "settings", "diagnostics", "history", "web":
 		u.open(item.key)
 	case "select":
 		b := item.id
@@ -475,6 +478,17 @@ func (u *uiModel) activate() tea.Cmd {
 	case "certbot-remove":
 		u.review("Отключить интеграцию?", "Удалить только хуки и timer VPSWall, закрыть его окно\nи вернуть ранее включённые стандартные timers Certbot.", "certbot", func() (string, error) {
 			return "Интеграция отключена.", m.removeCertbotIntegration()
+		})
+	case "web-enable":
+		u.review("Включить веб-панель?", "Запустить localhost-сервис на 127.0.0.1:8090.\nПолучите токен следующим пунктом и подключите SSH-туннель.", "web", func() (string, error) {
+			return "Веб-сервис включён.\nНа вашем компьютере:\nssh -N -L 127.0.0.1:8090:127.0.0.1:8090 -p SSH_PORT USER@SERVER\nЗатем откройте http://127.0.0.1:8090", m.webService(true)
+		})
+	case "web-disable":
+		u.review("Отключить веб-панель?", "Сервис будет остановлен, токен отозван. Firewall продолжает работать.", "web", func() (string, error) { return "Веб-сервис отключён.", m.webService(false) })
+	case "web-token":
+		u.review("Выдать новый токен?", "Токен действует 8 часов. Предыдущий токен станет недействительным.\nНе передавайте его другим людям.", "web", func() (string, error) {
+			token, e := m.issueWebToken()
+			return "Токен доступа:\n\n" + token + "\n\nВставьте его в локальную веб-панель.\nТокен связан с текущим SSH-подключением.", e
 		})
 	case "ports":
 		return u.operation("Читаю порты", "diagnostics", func() (string, error) { return m.run("ss", "-lntup") })
@@ -665,6 +679,8 @@ func screenTitle(s string) string {
 		return "Политика и включение"
 	case "ssh-choice":
 		return "SSH · сохранить доступ"
+	case "web":
+		return "Веб-панель · SSH-туннель"
 	case "diagnostics":
 		return "Диагностика"
 	case "history":

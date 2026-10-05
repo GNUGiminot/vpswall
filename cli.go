@@ -43,10 +43,11 @@ func main() {
 		return
 	}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
-		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nУстановка: sudo sh ./install.sh")
+		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nsudo vpswall web enable / disable          Локальный веб-сервис\nsudo --preserve-env=SSH_CONNECTION vpswall web token\nvpswall web --demo                         Демонстрация веб-панели\nУстановка: sudo sh ./install.sh")
 		return
 	}
-	demo := len(args) == 1 && args[0] == "--demo"
+	webDemo := len(args) == 2 && args[0] == "web" && args[1] == "--demo"
+	demo := len(args) == 1 && args[0] == "--demo" || webDemo
 	var m *manager
 	var e error
 	if demo {
@@ -70,6 +71,31 @@ func main() {
 	}
 	legacy := &app{state: m.root, etc: m.system, run: command, now: m.now, ssh: m.ssh}
 	switch {
+	case webDemo:
+		_, e = m.issueWebToken()
+		if e == nil {
+			go func() {
+				for range time.Tick(time.Second) {
+					m.worker(false)
+				}
+			}()
+			e = m.serveWeb(8091)
+		}
+	case len(args) == 2 && args[0] == "web" && args[1] == "serve":
+		e = m.serveWeb(8090)
+	case len(args) == 2 && args[0] == "web" && args[1] == "enable":
+		e = m.webService(true)
+		if e == nil {
+			fmt.Println("Веб-панель включена на 127.0.0.1:8090. Получите токен: sudo --preserve-env=SSH_CONNECTION vpswall web token")
+		}
+	case len(args) == 2 && args[0] == "web" && args[1] == "disable":
+		e = m.webService(false)
+	case len(args) == 2 && args[0] == "web" && args[1] == "token":
+		var token string
+		token, e = m.issueWebToken()
+		if e == nil {
+			fmt.Println("Токен на 8 часов (предыдущий заменён):\n" + token + "\n\nНа вашем компьютере: ssh -N -L 127.0.0.1:8090:127.0.0.1:8090 -p SSH_PORT USER@SERVER\nОткройте http://127.0.0.1:8090 и вставьте токен. Не отправляйте его другим людям.")
+		}
 	case demo || len(args) == 0:
 		p, err := legacy.getPending()
 		if err != nil {

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,99 @@ import (
 	"testing"
 	"time"
 )
+
+func TestIntegrationWebAPI(t *testing.T) {
+	requireLab(t)
+	resetKernel(t)
+	peerNetwork(t)
+	m := liveManager(t, "nftables")
+	base := m.run
+	m.run = func(name string, args ...string) (string, error) {
+		if name == "systemd-run" {
+			return "", nil
+		}
+		if name == "systemctl" {
+			if args[0] == "is-enabled" {
+				return "enabled", nil
+			}
+			if args[0] == "is-active" {
+				return "active", nil
+			}
+			return "", nil
+		}
+		return base(name, args...)
+	}
+	token, e := m.issueWebToken()
+	if e != nil {
+		t.Fatal(e)
+	}
+	panel := &webServer{m: m}
+	server := httptest.NewServer(panel)
+	defer server.Close()
+	c, _ := m.config()
+	action := webAction{Op: "rule-save", Revision: configRevision(c), Action: "allow", Protocol: "tcp", Port: "8080", Source: "any", Priority: 100, Comment: "HTTP API"}
+	send := func(a webAction) webJob {
+		t.Helper()
+		data, _ := json.Marshal(a)
+		req, _ := http.NewRequest("POST", server.URL+"/api/action", strings.NewReader(string(data)))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Origin", server.URL)
+		req.Header.Set("Content-Type", "application/json")
+		res, e := http.DefaultClient.Do(req)
+		if e != nil {
+			t.Fatal(e)
+		}
+		res.Body.Close()
+		if res.StatusCode != 202 {
+			t.Fatal(res.StatusCode)
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			panel.mu.Lock()
+			job := panel.job
+			panel.mu.Unlock()
+			if !job.Running {
+				if job.Error != "" {
+					t.Fatal(job.Error)
+				}
+				return job
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("web job timeout")
+		return webJob{}
+	}
+	job := send(action)
+	if job.Pending == nil {
+		t.Fatal("no rollback transaction")
+	}
+	confirm := *m
+	confirm.ssh = "192.0.2.1 2000 192.0.2.2 22"
+	if e = confirm.confirm(job.Pending.Token); e != nil {
+		t.Fatal(e)
+	}
+	probePort(t, "8080", true)
+	probePort(t, "80", false)
+	send(webAction{Op: "window-add", Protocol: "tcp", Port: "80", Source: "any", Kind: "lease", Duration: "1m"})
+	probePort(t, "80", true)
+	windows, _ := m.windows()
+	if len(windows) != 1 {
+		t.Fatal(windows)
+	}
+	send(webAction{Op: "window-delete", ID: windows[0].ID})
+	probePort(t, "80", false)
+	probePort(t, "8080", true)
+	if e = m.webService(true); e != nil {
+		t.Fatal(e)
+	}
+	unit := filepath.Join(m.system, "systemd", "system", "vpswall-web.service")
+	if out, e := exec.Command("systemd-analyze", "verify", unit).CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	if e = m.webService(false); e != nil {
+		t.Fatal(e)
+	}
+}
 
 func TestIntegrationSSHMigration(t *testing.T) {
 	requireLab(t)
@@ -196,6 +292,7 @@ func peerNetwork(t *testing.T) {
 		}
 	}
 	run("netns", "add", "vpswall-client")
+	run("link", "set", "lo", "up")
 	t.Cleanup(func() {
 		exec.Command(ip, "netns", "delete", "vpswall-client").Run()
 		exec.Command(ip, "link", "delete", "vpswall-host").Run()

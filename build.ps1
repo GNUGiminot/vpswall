@@ -26,8 +26,8 @@ try {
     $env:GOARCH = $taskPreviousGOARCH
     $env:CGO_ENABLED = $taskPreviousCGO
 }
-$taskArchive = Join-Path $PSScriptRoot 'vpswall-0.2.1.zip'
-$taskFiles = @('go.mod', 'go.sum', 'README.md', 'install.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh')
+$taskArchive = Join-Path $PSScriptRoot 'vpswall-0.3.0.zip'
+$taskFiles = @('go.mod', 'go.sum', 'README.md', 'install.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh', 'web/index.html', 'web/app.js', 'web/style.css')
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 if (Test-Path -LiteralPath $taskArchive) { Remove-Item -LiteralPath $taskArchive }
 $taskZip = [IO.Compression.ZipFile]::Open($taskArchive, [IO.Compression.ZipArchiveMode]::Create)
@@ -45,7 +45,7 @@ try {
 } finally {
     $taskZip.Dispose()
 }
-$taskHashLines = @('dist/vpswall-linux-amd64', 'dist/vpswall-linux-arm64', 'vpswall-0.2.1.zip') | ForEach-Object {
+$taskHashLines = @('dist/vpswall-linux-amd64', 'dist/vpswall-linux-arm64', 'vpswall-0.3.0.zip') | ForEach-Object {
     $taskHash = Get-FileHash -Algorithm SHA256 -LiteralPath $_
     $taskHash.Hash.ToLowerInvariant() + '  ' + $_
 }
