@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 const executable = "/usr/local/bin/vpswall"
 const rollbackSeconds = 120
 
@@ -814,7 +814,7 @@ func hostname() string {
 	}
 	return h
 }
-func main() {
+func legacyMain() {
 	args := os.Args[1:]
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
 		fmt.Println("vpswall", version)

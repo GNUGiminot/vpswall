@@ -3,3 +3,5 @@
 /SHA256SUMS.txt
 /vpswall.exe
 /vpswall
+/vpswall-demo.exe
+/tests/*.log
