@@ -26,15 +26,20 @@ try {
     $env:GOARCH = $taskPreviousGOARCH
     $env:CGO_ENABLED = $taskPreviousCGO
 }
+# dist/SHA256SUMS goes into the archive; install.sh refuses a binary that does not match.
+$taskBinarySums = @('vpswall-linux-amd64', 'vpswall-linux-arm64') | ForEach-Object {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $_)).Hash.ToLowerInvariant() + '  ' + $_
+}
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'dist/SHA256SUMS'), (($taskBinarySums -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 $taskArchive = Join-Path $PSScriptRoot 'vpswall-0.4.0.zip'
-$taskFiles = @('go.mod', 'go.sum', 'README.md', 'install.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh', 'web/index.html', 'web/app.js', 'web/style.css')
+$taskFiles = @('go.mod', 'go.sum', 'README.md', 'CHANGELOG.md', 'install.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh', 'web/index.html', 'web/app.js', 'web/style.css')
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 if (Test-Path -LiteralPath $taskArchive) { Remove-Item -LiteralPath $taskArchive }
 $taskZip = [IO.Compression.ZipFile]::Open($taskArchive, [IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach ($taskFile in $taskFiles) {
         if ($taskFile -eq 'dist') {
-            foreach ($taskBinary in @('vpswall-linux-amd64', 'vpswall-linux-arm64')) {
+            foreach ($taskBinary in @('vpswall-linux-amd64', 'vpswall-linux-arm64', 'SHA256SUMS')) {
                 $taskBinaryPath = Join-Path (Join-Path $PSScriptRoot 'dist') $taskBinary
                 [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($taskZip, $taskBinaryPath, "dist/$taskBinary", [IO.Compression.CompressionLevel]::Optimal)
             }

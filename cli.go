@@ -64,6 +64,7 @@ func main() {
 			fail(fmt.Errorf("запустите через sudo --preserve-env=SSH_CONNECTION vpswall"))
 		}
 		m = &manager{root: "/var/lib/vpswall", system: "/etc", runtimeDir: "/run/vpswall", run: managerCommand, now: time.Now, ssh: os.Getenv("SSH_CONNECTION")}
+		m.sessionStart = func() (time.Time, error) { return procSessionStart("/proc", os.Getpid()) }
 		a := &app{state: m.root}
 		e = a.init()
 	}

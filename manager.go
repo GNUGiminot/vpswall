@@ -195,6 +195,7 @@ type managerChange struct {
 	Ready       bool          `json:"ready"`
 	Description string        `json:"description"`
 	SSHPort     string        `json:"ssh_port,omitempty"`
+	Created     time.Time     `json:"created,omitempty"`
 }
 type manager struct {
 	root, system, runtimeDir string
@@ -203,6 +204,8 @@ type manager struct {
 	ssh                      string
 	demo                     bool
 	lookup                   func(string) (string, error)
+	// sessionStart reports when the SSH session running this process began.
+	sessionStart func() (time.Time, error)
 }
 
 func (m *manager) resolve(name string) (string, error) {
@@ -380,10 +383,17 @@ func (m *manager) synchronize(c managerConfig, force bool) error {
 	fingerprint := filepath.Join(m.runtimeDir, "fingerprint")
 	if !force {
 		if saved, e := os.ReadFile(fingerprint); e == nil && string(saved) == hash {
-			return nil
+			// The fingerprint only says what VPSWall applied last; a firewall reload,
+			// `nft flush ruleset` or `ufw reset` removes rules behind its back.
+			drift := m.verifyBackend(c, desired)
+			if drift == "" {
+				return nil
+			}
+			m.log("DRIFT " + drift + "; правила VPSWall применяются заново")
 		}
 	}
-	if e = m.preflightBackend(c, desired, old); e != nil {
+	warning, e := m.preflightBackend(c, desired, old)
+	if e != nil {
 		return e
 	}
 	if e = writeJSON(m.path("owned.json"), journal); e != nil {
@@ -402,7 +412,83 @@ func (m *manager) synchronize(c managerConfig, force bool) error {
 	if e = os.MkdirAll(m.runtimeDir, 0700); e != nil {
 		return e
 	}
+	if warning != "" {
+		m.setAlert(warning)
+	} else {
+		m.clearAlert()
+	}
 	return os.WriteFile(fingerprint, []byte(hash), 0600)
+}
+
+// narrows reports whether applying wanted over old only removes allow rules,
+// so it can never open access, even if foreign chains would interfere.
+func narrows(c managerConfig, wanted []managedRule, old ownedBook) bool {
+	if !c.Enabled || old.Backend != c.Backend || old.Zone != c.Zone || old.Policy != c.Policy {
+		return false
+	}
+	have := map[string]managedRule{}
+	for _, r := range old.Rules {
+		have[r.ID] = r
+	}
+	kept := map[string]bool{}
+	for _, r := range wanted {
+		o, ok := have[r.ID]
+		if !ok || o.Action != r.Action || o.Protocol != r.Protocol || o.Port != r.Port || o.Source != r.Source || o.Priority != r.Priority {
+			return false
+		}
+		kept[r.ID] = true
+	}
+	for _, r := range old.Rules {
+		if !kept[r.ID] && r.Action != "allow" {
+			return false
+		}
+	}
+	return true
+}
+
+type alertState struct {
+	Message string    `json:"message"`
+	Time    time.Time `json:"time"`
+}
+
+// alert is a persistent problem shown in TUI/web until a successful apply clears it.
+func (m *manager) alert() string {
+	var a alertState
+	if readJSON(m.path("alert.json"), &a) != nil || a.Message == "" {
+		return ""
+	}
+	return a.Time.Local().Format("02.01 15:04") + " · " + a.Message
+}
+func (m *manager) setAlert(message string) {
+	var a alertState
+	if readJSON(m.path("alert.json"), &a) == nil && a.Message == message {
+		return
+	}
+	if writeJSON(m.path("alert.json"), alertState{message, m.now()}) == nil {
+		m.log("ALERT " + message)
+	}
+}
+func (m *manager) clearAlert() {
+	if os.Remove(m.path("alert.json")) == nil {
+		m.log("ALERT CLEARED")
+	}
+}
+
+// syncFailure describes a failed scheduled apply; an expired window that is still
+// in the ownership journal means the port may still be open.
+func (m *manager) syncFailure(err error) string {
+	var book ownedBook
+	readJSON(m.path("owned.json"), &book)
+	var open []string
+	for _, r := range book.Rules {
+		if r.Temporary && !m.now().Before(r.Until) {
+			open = append(open, r.Port+"/"+r.Protocol)
+		}
+	}
+	if len(open) > 0 {
+		return "Окно порта " + strings.Join(open, ", ") + " не закрыто: " + err.Error()
+	}
+	return "Правила VPSWall не применены: " + err.Error()
 }
 func (m *manager) checkReady() error {
 	if m.demo {
@@ -514,7 +600,7 @@ func (m *manager) changeChecked(description string, after managerConfig, sshPort
 		if e != nil {
 			return e
 		}
-		p = &managerChange{Token: token, Before: before, SSH: m.ssh, SSHPort: sshPort, Deadline: m.now().Add(120 * time.Second), Description: description}
+		p = &managerChange{Token: token, Before: before, SSH: m.ssh, SSHPort: sshPort, Created: m.now(), Deadline: m.now().Add(120 * time.Second), Description: description}
 		if e = writeJSON(m.path("change.json"), p); e != nil {
 			return e
 		}
@@ -597,6 +683,23 @@ func (m *manager) confirm(token string) error {
 		}
 		if p.SSH != "" && (m.ssh == "" || m.ssh == p.SSH) {
 			return errors.New("подтвердите из нового SSH-подключения")
+		}
+		if p.SSH != "" && !(m.demo && m.sessionStart == nil) {
+			// A different SSH_CONNECTION alone may be a session opened before the change.
+			if m.sessionStart == nil {
+				return errors.New("не удалось определить начало SSH-сеанса")
+			}
+			started, e := m.sessionStart()
+			if e != nil {
+				return errors.New("подтвердите из нового SSH-подключения без tmux/screen: " + e.Error())
+			}
+			created := p.Created
+			if created.IsZero() {
+				created = p.Deadline.Add(-120 * time.Second)
+			}
+			if !started.After(created) {
+				return errors.New("этот SSH-сеанс открыт до изменения; откройте новое подключение")
+			}
 		}
 		if p.SSHPort != "" {
 			fields := strings.Fields(m.ssh)
@@ -693,7 +796,10 @@ func (m *manager) worker(force bool) error {
 		if c.Backend == "" {
 			return nil
 		}
-		return m.synchronize(c, force)
+		if e = m.synchronize(c, force); e != nil {
+			m.setAlert(m.syncFailure(e))
+		}
+		return e
 	})
 }
 func (m *manager) selectBackend(backend, zone string) error {

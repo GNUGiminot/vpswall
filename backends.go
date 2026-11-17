@@ -226,10 +226,8 @@ func (m *manager) applyBackend(c managerConfig, wanted []managedRule, old ownedB
 	if m.demo {
 		return nil
 	}
-	if c.Enabled {
-		if e := m.conflicts(c.Backend); e != nil {
-			return e
-		}
+	if _, e := m.checkConflicts(c, wanted, old); e != nil {
+		return e
 	}
 	switch c.Backend {
 	case "ufw":
@@ -243,17 +241,30 @@ func (m *manager) applyBackend(c managerConfig, wanted []managedRule, old ownedB
 	}
 	return errors.New("неверный backend")
 }
-func (m *manager) preflightBackend(c managerConfig, wanted []managedRule, old ownedBook) error {
+
+// checkConflicts lets a change that only removes permissions through a conflict
+// (e.g. Docker/fail2ban chains appeared) so expired windows still close; it
+// returns a warning for the alert instead of the error.
+func (m *manager) checkConflicts(c managerConfig, wanted []managedRule, old ownedBook) (string, error) {
+	if !c.Enabled {
+		return "", nil
+	}
+	e := m.conflicts(c.Backend)
+	if e == nil {
+		return "", nil
+	}
+	if narrows(c, wanted, old) {
+		return "Конфликт с другим firewall; закрытие доступа применено, открытие портов заблокировано: " + e.Error(), nil
+	}
+	return "", e
+}
+func (m *manager) preflightBackend(c managerConfig, wanted []managedRule, old ownedBook) (string, error) {
 	if m.demo {
-		return nil
+		return "", nil
 	}
-	if c.Enabled {
-		if e := m.conflicts(c.Backend); e != nil {
-			return e
-		}
-	}
-	if c.Backend != "firewalld" {
-		return nil
+	warning, e := m.checkConflicts(c, wanted, old)
+	if e != nil || c.Backend != "firewalld" {
+		return warning, e
 	}
 	active, _ := m.nativeActive("firewalld")
 	owned := map[string]bool{}
@@ -289,19 +300,40 @@ func (m *manager) preflightBackend(c managerConfig, wanted []managedRule, old ow
 			args = append(args, "--query-rich-rule="+expr)
 			out, e := m.run(name, args...)
 			if e == nil && strings.TrimSpace(out) == "yes" {
-				return errors.New("правило совпадает с существующим чужим rich rule; оно не будет присвоено VPSWall")
+				return "", errors.New("правило совпадает с существующим чужим rich rule; оно не будет присвоено VPSWall")
 			}
 		}
 	}
-	return nil
+	return warning, nil
 }
+func ufwKey(r managedRule) string { return r.ID + "|" + strings.Join(r.ufwArgs(), " ") }
 func (m *manager) applyUFW(c managerConfig, wanted, known []managedRule) error {
 	out, e := m.run("ufw", "show", "added")
 	if e != nil {
 		return e
 	}
+	// Incremental mode: only temporary rules are added (prepend keeps them first, as
+	// sortedRules does) and every known rule is still in place. Otherwise rebuild.
+	have, want := map[string]bool{}, map[string]bool{}
+	incremental := true
 	for _, r := range known {
-		if strings.Contains(out, "VPSWall:"+r.ID) {
+		have[ufwKey(r)] = true
+		if !r.AutoSSH && !strings.Contains(out, "VPSWall:"+r.ID) {
+			incremental = false
+		}
+	}
+	var added []managedRule
+	for _, r := range wanted {
+		want[ufwKey(r)] = true
+		if !have[ufwKey(r)] {
+			added = append(added, r)
+			if !r.Temporary {
+				incremental = false
+			}
+		}
+	}
+	for _, r := range known {
+		if (!incremental || !want[ufwKey(r)]) && strings.Contains(out, "VPSWall:"+r.ID) {
 			args := append([]string{"--force", "delete"}, r.ufwArgs()...)
 			if _, e = m.run("ufw", args...); e != nil {
 				return e
@@ -309,6 +341,9 @@ func (m *manager) applyUFW(c managerConfig, wanted, known []managedRule) error {
 		}
 	}
 	desired := sortedRules(wanted)
+	if incremental {
+		desired = sortedRules(added)
+	}
 	// prepend does not update comments on existing duplicate rules. Detect collisions.
 	for i := len(desired) - 1; i >= 0; i-- {
 		r := desired[i]
@@ -344,6 +379,99 @@ func (m *manager) applyUFW(c managerConfig, wanted, known []managedRule) error {
 		_, e = m.run("ufw", "--force", "disable")
 	}
 	return e
+}
+
+// verifyBackend checks that the rules VPSWall last applied are actually present.
+// It returns a description of the drift, or "" when everything is in place.
+func (m *manager) verifyBackend(c managerConfig, rules []managedRule) string {
+	if m.demo {
+		return ""
+	}
+	switch c.Backend {
+	case "ufw":
+		status, e := m.run("ufw", "status")
+		if e != nil {
+			return "ufw status: " + e.Error()
+		}
+		if strings.HasPrefix(strings.TrimSpace(status), "Status: active") != c.Enabled {
+			return "состояние UFW изменено извне"
+		}
+		if !c.Enabled {
+			return ""
+		}
+		out, e := m.run("ufw", "show", "added")
+		if e != nil {
+			return "ufw show added: " + e.Error()
+		}
+		for _, r := range rules {
+			// AutoSSH rules may legitimately coincide with a foreign rule.
+			if !r.AutoSSH && !strings.Contains(out, "VPSWall:"+r.ID) {
+				return "в UFW нет правила " + r.Port + "/" + r.Protocol
+			}
+		}
+	case "firewalld":
+		if !c.Enabled {
+			return ""
+		}
+		if active, _ := m.nativeActive("firewalld"); !active {
+			return "firewalld остановлен извне"
+		}
+		var expressions []string
+		for i, r := range sortedRules(rules) {
+			if r.Temporary && r.Until.Sub(m.now()) < time.Second {
+				continue
+			}
+			expressions = append(expressions, richRule(r, i))
+		}
+		if c.Policy == "deny" {
+			expressions = append(expressions, firePolicy("ipv4"), firePolicy("ipv6"))
+		}
+		for _, expr := range expressions {
+			out, e := m.run("firewall-cmd", "--zone="+c.Zone, "--query-rich-rule="+expr)
+			if e != nil || strings.TrimSpace(out) != "yes" {
+				return "в firewalld нет rich rule VPSWall (reload?)"
+			}
+		}
+	case "nftables":
+		out, e := m.run("nft", "-j", "list", "table", "inet", "vpswall")
+		if !c.Enabled {
+			if e == nil {
+				return "таблица inet vpswall осталась при выключенном экране"
+			}
+			return ""
+		}
+		if e != nil || !nftOwned(out) {
+			return "таблица inet vpswall отсутствует или заменена"
+		}
+		for _, r := range rules {
+			if !strings.Contains(out, "VPSWall:"+r.ID) {
+				return "в таблице inet vpswall нет правила " + r.Port + "/" + r.Protocol
+			}
+		}
+	case "iptables":
+		for _, name := range []string{"iptables", "ip6tables"} {
+			_, hookErr := m.run(name, "-w", "5", "-C", "INPUT", "-m", "comment", "--comment", "VPSWall:hook", "-j", "VPSWALL_IN")
+			if !c.Enabled {
+				if hookErr == nil {
+					return name + ": переход в VPSWALL_IN остался при выключенном экране"
+				}
+				continue
+			}
+			if hookErr != nil {
+				return name + ": нет перехода INPUT → VPSWALL_IN"
+			}
+			out, e := m.run(name, "-w", "5", "-S", "VPSWALL_IN")
+			if e != nil {
+				return name + ": нет цепочки VPSWALL_IN"
+			}
+			for _, r := range rules {
+				if iptRule(r, name == "ip6tables") != "" && !strings.Contains(out, "VPSWall:"+r.ID) {
+					return name + ": нет правила " + r.Port + "/" + r.Protocol
+				}
+			}
+		}
+	}
+	return ""
 }
 func richRule(r managedRule, index int) string {
 	family := ""

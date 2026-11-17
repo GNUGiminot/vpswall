@@ -15,6 +15,16 @@ case "$(uname -m)" in
 esac
 binary="$script_dir/dist/vpswall-linux-$arch"
 if [ ! -f "$binary" ]; then echo "Missing binary: $binary" >&2; exit 1; fi
+# Refuse a corrupted or replaced binary; the sums are written by build.ps1.
+sums="$script_dir/dist/SHA256SUMS"
+if [ ! -f "$sums" ]; then echo "Missing checksum file: $sums" >&2; exit 1; fi
+if ! command -v sha256sum >/dev/null 2>&1; then echo 'sha256sum is required to verify the binary.' >&2; exit 1; fi
+expected=$(awk -v f="vpswall-linux-$arch" '$2 == f { print $1 }' "$sums")
+actual=$(sha256sum "$binary" | awk '{ print $1 }')
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "SHA256 mismatch for $binary; download the release again." >&2
+    exit 1
+fi
 for cmd in systemctl systemd-run; do
     if [ ! -x "/usr/bin/$cmd" ]; then echo "Missing /usr/bin/$cmd" >&2; exit 1; fi
 done

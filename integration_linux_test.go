@@ -205,7 +205,7 @@ func TestIntegrationSSHMigration(t *testing.T) {
 	for i, confirm := range []bool{false, true} {
 		port := strconv.Itoa(2222 + i)
 		c, _ := m.config()
-		c, e := keepSSH(c, m.ssh)
+		c, e := keepSSH(c, m.ssh, "ip")
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -267,6 +267,8 @@ func liveManager(t *testing.T, b string) *manager {
 	root := t.TempDir()
 	m := &manager{root: root, system: "/etc", runtimeDir: filepath.Join(root, "run"), now: time.Now, ssh: "192.0.2.1 1000 192.0.2.2 22"}
 	m.run = managerCommand
+	// The lab simulates the confirming SSH session by its SSH_CONNECTION; treat it as new.
+	m.sessionStart = func() (time.Time, error) { return time.Now(), nil }
 	c := managerConfig{Backend: b, Zone: "public", Enabled: true, Policy: "deny"}
 	if e := writeJSON(m.path("manager.json"), c); e != nil {
 		t.Fatal(e)

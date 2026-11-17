@@ -74,6 +74,9 @@ ExecStart=/usr/local/bin/vpswall web serve
 Restart=on-failure
 RestartSec=5s
 UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
 [Install]
 WantedBy=multi-user.target
 `
@@ -345,6 +348,8 @@ type webState struct {
 	CertTime string        `json:"cert_time"`
 	Forwards []portForward `json:"forwards"`
 	Now      time.Time     `json:"now"`
+	Alert    string        `json:"alert,omitempty"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 func tailFile(path string) string {
@@ -396,6 +401,10 @@ func (s *webServer) state(m *manager) (webState, error) {
 	if r, e := sshRule(m.ssh); e == nil {
 		out.SSHPort = r.Port
 	}
+	if w := sshLockWarning(out.Config, out.SSHPort); w != "" {
+		out.Warnings = append(out.Warnings, w)
+	}
+	out.Alert = m.alert()
 	entries, _ := os.ReadDir(m.path("managed-backups"))
 	for _, entry := range entries {
 		id := strings.TrimSuffix(entry.Name(), ".json")
@@ -439,6 +448,7 @@ type webAction struct {
 	Enabled    bool   `json:"enabled"`
 	Target     string `json:"target"`
 	TargetPort string `json:"target_port"`
+	SSHSource  string `json:"ssh_source"` // any (по умолчанию), subnet, ip
 }
 
 func (s *webServer) action(m *manager, a webAction) (string, *managerChange, error) {
@@ -521,19 +531,22 @@ func (s *webServer) action(m *manager, a webAction) (string, *managerChange, err
 	case "toggle":
 		c.Enabled = a.Enabled
 		if c.Enabled {
-			c, e = keepSSH(c, m.ssh)
+			c, e = keepSSH(c, m.ssh, a.SSHSource)
 			if e != nil {
 				return "", nil, e
 			}
 		}
 		return change("Веб: состояние firewall; текущий SSH сохраняется при включении", c, "")
 	case "ssh-new":
-		c, e = keepSSH(c, m.ssh)
+		c, e = keepSSH(c, m.ssh, a.SSHSource)
 		if e != nil {
 			return "", nil, e
 		}
-		old, _ := sshRule(m.ssh)
-		r, e := newManaged("allow", "tcp", a.Port, old.Source, "SSH · новый порт")
+		source, e := sshSource(m.ssh, a.SSHSource)
+		if e != nil {
+			return "", nil, e
+		}
+		r, e := newManaged("allow", "tcp", a.Port, source, "SSH · новый порт")
 		if e != nil {
 			return "", nil, e
 		}

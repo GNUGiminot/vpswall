@@ -38,7 +38,7 @@ func TestSSHChoiceDefaultsToKeepAndDoesNotChangeService(t *testing.T) {
 func sshAfter(t *testing.T, m *manager, port string) managerConfig {
 	t.Helper()
 	c, _ := m.config()
-	c, e := keepSSH(c, m.ssh)
+	c, e := keepSSH(c, m.ssh, "ip")
 	if e != nil {
 		t.Fatal(e)
 	}

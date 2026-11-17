@@ -174,7 +174,9 @@ func (u *uiModel) populate() {
 		if r, e := sshRule(u.m.ssh); e == nil {
 			port = r.Port
 		}
-		u.items = []uiItem{{"Оставить " + port + " открытым", "По умолчанию; SSH и старый порт сохраняются", "ssh-keep", ""}, {"Перейти на новый SSH-порт", "Сначала новый доступ; закрытие старого — отдельно", "ssh-new", ""}}
+		subnet, _ := sshSource(u.m.ssh, "subnet")
+		ip, _ := sshSource(u.m.ssh, "ip")
+		u.items = []uiItem{{"Оставить " + port + " открытым", "По умолчанию; со всех адресов, вход по ключам/паролю как раньше", "ssh-keep", "any"}, {"Оставить " + port + " открытым из подсети", "Только " + subnet + "; при смене провайдера доступ пропадёт", "ssh-keep", "subnet"}, {"Оставить " + port + " только для моего IP", "Только " + ip + "; РИСК: при смене IP доступ будет потерян", "ssh-keep", "ip"}, {"Перейти на новый SSH-порт", "Сначала новый доступ; закрытие старого — отдельно", "ssh-new", ""}}
 	case "web":
 		u.items = []uiItem{{"Включить веб-сервис", "Только 127.0.0.1:8090; systemd, без открытого внешнего порта", "web-enable", ""}, {"Получить токен", "На 8 часов; предыдущий токен станет недействительным", "web-token", ""}, {"Отключить веб-сервис", "Остановить service и отозвать токен", "web-disable", ""}}
 	case "diagnostics":
@@ -262,7 +264,11 @@ func changeMessage(p *managerChange) string {
 }
 func (u *uiModel) configReview(description string, c managerConfig) {
 	m := u.m
-	u.review("Применить изменение?", description+"\n\nБудет запущен независимый таймер отката на 120 секунд.", "home", func() (string, error) { p, e := m.change(description, c); return changeMessage(p), e })
+	revision := configRevision(u.config)
+	u.review("Применить изменение?", description+"\n\nБудет запущен независимый таймер отката на 120 секунд.", "home", func() (string, error) {
+		p, e := m.changeChecked(description, c, "", revision)
+		return changeMessage(p), e
+	})
 }
 func (u *uiModel) submitForm() error {
 	values := []string{}
@@ -276,7 +282,8 @@ func (u *uiModel) submitForm() error {
 		if e := validateSSHPort(port); e != nil {
 			return e
 		}
-		c, e := keepSSH(u.config, m.ssh)
+		mode := map[string]string{"все адреса": "any", "подсеть": "subnet", "мой IP": "ip"}[values[1]]
+		c, e := keepSSH(u.config, m.ssh, mode)
 		if e != nil {
 			return e
 		}
@@ -284,16 +291,21 @@ func (u *uiModel) submitForm() error {
 		if port == old.Port {
 			return errorsNew("укажите другой порт или выберите «Оставить открытым»")
 		}
+		source, e := sshSource(m.ssh, mode)
+		if e != nil {
+			return e
+		}
 		c.Enabled = true
-		r, e := newManaged("allow", "tcp", port, old.Source, "SSH · новый порт")
+		r, e := newManaged("allow", "tcp", port, source, "SSH · новый порт")
 		if e != nil {
 			return e
 		}
 		r.Priority = 0
 		r.AutoSSH = true
 		c.Rules = append(c.Rules, r)
-		u.review("Перейти на SSH-порт "+port+"?", "Будет открыт новый порт и запущен отдельный OpenSSH listener\nс текущими настройками авторизации. Ключи и пароли не меняются.\nСтарый порт "+old.Port+" остаётся открытым.\n\nВойдите: ssh -p "+port+" USER@SERVER\nПодтвердите из этого подключения за 120 секунд.\nБез подтверждения новый listener и его разрешение снимаются.\nПорт также должен быть открыт в панели хостинга.", "home", func() (string, error) {
-			p, e := m.changeSSH("Новый SSH-порт "+port+"; старый "+old.Port+" сохраняется", c, port)
+		revision := configRevision(u.config)
+		u.review("Перейти на SSH-порт "+port+"?", "Будет открыт новый порт и запущен отдельный OpenSSH listener\nс текущими настройками авторизации. Ключи и пароли не меняются.\nСтарый порт "+old.Port+" остаётся открытым.\nДоступ к портам: "+sshSourceLabel(source)+".\n\nВойдите: ssh -p "+port+" USER@SERVER\nПодтвердите из этого подключения за 120 секунд.\nБез подтверждения новый listener и его разрешение снимаются.\nПорт также должен быть открыт в панели хостинга.", "home", func() (string, error) {
+			p, e := m.changeChecked("Новый SSH-порт "+port+"; старый "+old.Port+" сохраняется", c, port, revision)
 			return "Войдите через ssh -p " + port + " USER@SERVER\n\n" + changeMessage(p), e
 		})
 	case "rule":
@@ -472,16 +484,17 @@ func (u *uiModel) activate() tea.Cmd {
 	case "ssh-menu":
 		u.open("ssh-choice")
 	case "ssh-keep":
-		c, e := keepSSH(u.config, m.ssh)
+		c, e := keepSSH(u.config, m.ssh, item.id)
 		if e != nil {
 			u.errorText = e.Error()
 			return nil
 		}
 		c.Enabled = true
 		r, _ := sshRule(m.ssh)
-		u.configReview("Оставить SSH-порт "+r.Port+" открытым и включить firewall. Настройки SSH не меняются.", c)
+		source, _ := sshSource(m.ssh, item.id)
+		u.configReview("Оставить SSH-порт "+r.Port+" открытым "+sshSourceLabel(source)+" и включить firewall. Настройки SSH не меняются.", c)
 	case "ssh-new":
-		u.form("ssh-port", "", []uiField{field("Новый SSH-порт", "2222")})
+		u.form("ssh-port", "", []uiField{field("Новый SSH-порт", "2222"), field("Откуда разрешить SSH", "все адреса", "все адреса", "подсеть", "мой IP")})
 	case "policy":
 		c := u.config
 		c.Policy = item.id
@@ -736,6 +749,14 @@ func (u uiModel) View() string {
 		header += "  " + lipgloss.NewStyle().Foreground(amber).Render("ДЕМО")
 	}
 	summary := u.m.summary()
+	if alert := u.m.alert(); alert != "" {
+		summary += "\n" + lipgloss.NewStyle().Foreground(amber).Render(ansi.Wrap("ТРЕВОГА · "+alert, width, " "))
+	}
+	if r, e := sshRule(u.m.ssh); e == nil {
+		if w := sshLockWarning(u.config, r.Port); w != "" {
+			summary += "\n" + lipgloss.NewStyle().Foreground(amber).Render(ansi.Wrap("ВНИМАНИЕ · "+w, width, " "))
+		}
+	}
 	body := ""
 	hint := "↑↓ выбор · Enter открыть · Esc домой · R обновить · Q выход"
 	if u.busy {

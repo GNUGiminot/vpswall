@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -160,18 +161,145 @@ func (m *manager) removeSSH(port string) error {
 	_, e = m.run("systemctl", "daemon-reload")
 	return e
 }
-func keepSSH(c managerConfig, connection string) (managerConfig, error) {
+
+// SSH source modes: "any" (default — a changed client IP keeps access),
+// "subnet" (/24 for IPv4, /64 for IPv6) and "ip" (only the current client).
+func sshSource(connection, mode string) (string, error) {
+	f := strings.Fields(connection)
+	if len(f) != 4 {
+		return "", errors.New("SSH_CONNECTION отсутствует: сначала добавьте разрешение на реальный порт SSH")
+	}
+	addr, e := netip.ParseAddr(f[0])
+	if e != nil {
+		return "", e
+	}
+	switch mode {
+	case "", "any":
+		return "any", nil
+	case "ip":
+		return addr.String(), nil
+	case "subnet":
+		bits := 24
+		if addr.Is6() && !addr.Is4In6() {
+			bits = 64
+		}
+		prefix, e := addr.Unmap().Prefix(bits)
+		if e != nil {
+			return "", e
+		}
+		return prefix.String(), nil
+	}
+	return "", errors.New("источник SSH: any, subnet или ip")
+}
+func sshSourceLabel(source string) string {
+	if source == "any" {
+		return "со всех адресов"
+	}
+	if strings.Contains(source, "/") {
+		return "из подсети " + source
+	}
+	return "только с IP " + source + " — при смене IP доступ будет потерян"
+}
+func keepSSH(c managerConfig, connection, mode string) (managerConfig, error) {
 	r, e := sshRule(connection)
 	if e != nil {
+		return c, e
+	}
+	if r.Source, e = sshSource(connection, mode); e != nil {
+		return c, e
+	}
+	if e = r.validate(); e != nil {
 		return c, e
 	}
 	r.Priority = 0
 	c.Rules = append([]managedRule{}, c.Rules...)
 	for _, old := range c.Rules {
-		if old.Action == r.Action && old.Port == r.Port && old.Protocol == r.Protocol && old.Source == r.Source {
+		if old.Action == r.Action && old.Port == r.Port && old.Protocol == r.Protocol && (old.Source == r.Source || old.Source == "any") {
 			return c, nil
 		}
 	}
 	c.Rules = append(c.Rules, r)
 	return c, nil
+}
+
+// sshLockWarning reports when VPSWall rules let the SSH port in only from fixed
+// addresses while other inbound traffic is dropped. Native/foreign rules are not seen.
+func sshLockWarning(c managerConfig, port string) string {
+	if !c.Enabled || c.Policy == "allow" || port == "" {
+		return ""
+	}
+	var sources []string
+	for _, r := range c.Rules {
+		if r.Action != "allow" || r.Protocol != "tcp" || !portCovers(r.Port, port) {
+			continue
+		}
+		if r.Source == "any" {
+			return ""
+		}
+		sources = append(sources, r.Source)
+	}
+	if len(sources) == 0 {
+		return "" // allowed by native/foreign rules VPSWall does not inspect
+	}
+	return "SSH-порт " + port + " разрешён только с " + strings.Join(sources, ", ") + ": при смене IP доступ будет потерян. Добавьте разрешение со всех адресов или из подсети"
+}
+func portCovers(spec, port string) bool {
+	n, e := strconv.Atoi(port)
+	if e != nil {
+		return false
+	}
+	lo, hi, found := strings.Cut(spec, ":")
+	if !found {
+		return spec == port
+	}
+	a, e1 := strconv.Atoi(lo)
+	b, e2 := strconv.Atoi(hi)
+	return e1 == nil && e2 == nil && a <= n && n <= b
+}
+
+// procSessionStart returns the start time of the nearest sshd ancestor of pid:
+// the per-connection sshd/sshd-session process forked when the SSH session began.
+// tmux/screen sessions have no such ancestor and are rejected.
+func procSessionStart(proc string, pid int) (time.Time, error) {
+	statFile, e := os.ReadFile(filepath.Join(proc, "stat"))
+	if e != nil {
+		return time.Time{}, e
+	}
+	var boot int64 = -1
+	for _, line := range strings.Split(string(statFile), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			boot, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		}
+	}
+	if boot < 0 {
+		return time.Time{}, errors.New("не найден btime в /proc/stat")
+	}
+	for i := 0; i < 64 && pid > 1; i++ {
+		data, e := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), "stat"))
+		if e != nil {
+			return time.Time{}, e
+		}
+		s := string(data)
+		open, end := strings.IndexByte(s, '('), strings.LastIndexByte(s, ')')
+		if open < 0 || end < open {
+			return time.Time{}, errors.New("неверный формат /proc/PID/stat")
+		}
+		comm := s[open+1 : end]
+		fields := strings.Fields(s[end+1:])
+		if len(fields) < 20 {
+			return time.Time{}, errors.New("неверный формат /proc/PID/stat")
+		}
+		if comm == "sshd" || comm == "sshd-session" {
+			ticks, e := strconv.ParseInt(fields[19], 10, 64)
+			if e != nil {
+				return time.Time{}, e
+			}
+			// USER_HZ is 100 on all supported Linux architectures.
+			return time.Unix(boot, 0).Add(time.Duration(ticks) * 10 * time.Millisecond), nil
+		}
+		if pid, e = strconv.Atoi(fields[1]); e != nil {
+			return time.Time{}, e
+		}
+	}
+	return time.Time{}, errors.New("команда запущена не из SSH-сеанса (tmux/screen?)")
 }
