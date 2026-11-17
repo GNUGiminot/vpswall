@@ -101,6 +101,7 @@ func (u *uiModel) populate() {
 			{"Правила", "Разрешения, запреты, приоритет и источники доступа", "rules", ""},
 			{"Время и окна портов", "Открыть на час, в заданную дату или каждый день", "windows", ""},
 			{"Сертификаты · Certbot", "Порт 80 только на время попытки продления", "certbot", ""},
+			{"Пересылка портов", "Порт этого VPS → другой сервер (relay, DNAT)", "forwards", ""},
 			{"Сетевой экран", "Выбор инструмента, установка и состояние", "backend", ""},
 			{"Политика и включение", "Разрешить или запретить прочий входящий трафик", "settings", ""},
 			{"Диагностика", "Все правила, слушающие порты и журнал", "diagnostics", ""},
@@ -150,6 +151,16 @@ func (u *uiModel) populate() {
 		}
 	case "window":
 		u.items = []uiItem{{"Пауза / возобновить", "Пауза удаляет только разрешение этого окна", "pause-window", u.formID}, {"Удалить окно", "Чужие и постоянные разрешения порта сохраняются", "delete-window", u.formID}}
+	case "forwards":
+		u.items = []uiItem{{"＋ Добавить пересылку", "Клиент подключается к этому VPS, пакеты уходят на цель", "forward-add", ""}}
+		list, e := u.m.forwards()
+		if e != nil {
+			u.errorText = e.Error()
+		}
+		for _, f := range list {
+			u.items = append(u.items, uiItem{f.String(), "Enter — удалить пересылку", "forward-delete", f.Protocol + " " + f.ListenPort})
+		}
+		u.items = append(u.items, uiItem{"Счётчики пакетов", "Сколько пакетов прошло по каждой пересылке", "forward-counters", ""})
 	case "certbot":
 		u.items = []uiItem{{"Подключить хуки", "Открывать 80 перед продлением; закрывать после попытки", "certbot-hooks", ""}, {"Задать время обновления", "Свой ежедневный timer Certbot; замена стандартного timer", "certbot-time", ""}, {"Проверить продление", "certbot renew --dry-run с тестовым центром сертификации", "certbot-test", ""}, {"Состояние таймера", "Расписание и результат последней попытки", "certbot-status", ""}, {"Отключить интеграцию", "Удалить свои хуки и вернуть стандартные timers", "certbot-remove", ""}}
 	case "settings":
@@ -316,6 +327,17 @@ func (u *uiModel) submitForm() error {
 			c.Rules = append(c.Rules, r)
 		}
 		u.configReview(fmt.Sprintf("%s %s/%s от %s · приоритет %d", actionLabel(r.Action), r.Port, r.Protocol, r.Source, r.Priority), c)
+	case "forward":
+		f := portForward{Protocol: values[0], ListenPort: values[1], Target: values[2], TargetPort: values[3]}
+		if f.TargetPort == "" {
+			f.TargetPort = f.ListenPort
+		}
+		if e := f.validate(); e != nil {
+			return e
+		}
+		u.review("Добавить пересылку?", f.String()+"\n\nПакеты на порт "+f.ListenPort+"/"+f.Protocol+" этого VPS будут пересылаться на "+f.Target+".\nОтвет вернётся через этот VPS (MASQUERADE). Входящие правила VPSWall не меняются.\nНа клиенте укажите адрес этого VPS и порт "+f.ListenPort+".", "forwards", func() (string, error) {
+			return "Пересылка добавлена: " + f.String(), m.addForward(f)
+		})
 	case "window-lease", "window-once", "window-daily":
 		duration, e := time.ParseDuration(values[3])
 		if e != nil {
@@ -387,8 +409,17 @@ func (u *uiModel) activate() tea.Cmd {
 	item := u.items[u.cursor]
 	m := u.m
 	switch item.key {
-	case "rules", "windows", "certbot", "backend", "settings", "diagnostics", "history", "web":
+	case "rules", "windows", "certbot", "backend", "settings", "diagnostics", "history", "web", "forwards":
 		u.open(item.key)
+	case "forward-add":
+		u.form("forward", "", []uiField{field("Протокол", "udp", "udp", "tcp"), field("Порт на этом VPS", "51820"), field("IPv4 целевого сервера", ""), field("Порт на целевом сервере", "51820")})
+	case "forward-delete":
+		p := strings.Fields(item.id)
+		u.review("Удалить пересылку?", item.title+"\n\nКлиенты, подключённые через этот VPS, потеряют связь с целевым сервером.", "forwards", func() (string, error) {
+			return "Пересылка удалена.", m.removeForward(p[0], p[1])
+		})
+	case "forward-counters":
+		return u.operation("Читаю счётчики", "forwards", m.forwardSummary)
 	case "select":
 		b := item.id
 		zone := "public"
@@ -673,6 +704,8 @@ func screenTitle(s string) string {
 		return "Время и окна портов"
 	case "certbot":
 		return "Сертификаты · Certbot"
+	case "forwards":
+		return "Пересылка портов"
 	case "backend":
 		return "Выбор сетевого экрана"
 	case "settings":

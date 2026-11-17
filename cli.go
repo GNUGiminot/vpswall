@@ -34,6 +34,7 @@ func demoManager() (*manager, error) {
 	r, _ := newManaged("allow", "tcp", "80", "any", "Обновление сертификата")
 	w := window{ID: r.ID, Rule: r, Kind: "daily", Clock: "03:00", Zone: "Europe/Moscow", Seconds: 3600}
 	writeJSON(m.path("windows.json"), []window{w})
+	m.writeForwards([]portForward{{"udp", "51820", "198.51.100.7", "51820"}})
 	return m, nil
 }
 func main() {
@@ -43,7 +44,7 @@ func main() {
 		return
 	}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
-		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nsudo vpswall web enable / disable          Локальный веб-сервис\nsudo --preserve-env=SSH_CONNECTION vpswall web token\nvpswall web --demo                         Демонстрация веб-панели\nУстановка: sudo sh ./install.sh")
+		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nsudo vpswall forward list                  Пересылки портов на другие серверы\nsudo vpswall forward add udp|tcp PORT IP [PORT]\nsudo vpswall forward del udp|tcp PORT\nsudo vpswall web enable / disable          Локальный веб-сервис\nsudo --preserve-env=SSH_CONNECTION vpswall web token\nvpswall web --demo                         Демонстрация веб-панели\nУстановка: sudo sh ./install.sh")
 		return
 	}
 	webDemo := len(args) == 2 && args[0] == "web" && args[1] == "--demo"
@@ -140,6 +141,29 @@ func main() {
 		}
 		if e == nil {
 			e = m.worker(true)
+		}
+		if e == nil {
+			e = m.withLock(m.applyForwards)
+		}
+	case len(args) == 2 && args[0] == "forward" && args[1] == "list":
+		var out string
+		out, e = m.forwardSummary()
+		fmt.Println(out)
+	case len(args) == 2 && args[0] == "forward" && args[1] == "apply":
+		e = m.withLock(m.applyForwards)
+	case (len(args) == 5 || len(args) == 6) && args[0] == "forward" && args[1] == "add":
+		f := portForward{Protocol: args[2], ListenPort: args[3], Target: args[4]}
+		if len(args) == 6 {
+			f.TargetPort = args[5]
+		}
+		e = m.addForward(f)
+		if e == nil {
+			fmt.Println("Пересылка добавлена: " + f.Protocol + " " + f.ListenPort + " → " + f.Target)
+		}
+	case len(args) == 4 && args[0] == "forward" && args[1] == "del":
+		e = m.removeForward(args[2], args[3])
+		if e == nil {
+			fmt.Println("Пересылка удалена.")
 		}
 	case len(args) == 1 && args[0] == "certbot-open":
 		e = m.certbotOpen()

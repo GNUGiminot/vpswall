@@ -259,6 +259,8 @@ func (s *webServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out, e = m.run("journalctl", "-u", "vpswall-worker.service", "-u", "vpswall-recover.service", "-n", "80", "--no-pager")
 		case "certbot":
 			out, e = m.run("systemctl", "status", "vpswall-certbot.timer", "vpswall-certbot.service", "--no-pager")
+		case "forwards":
+			out, e = m.forwardSummary()
 		default:
 			webError(w, 400, errors.New("неизвестная диагностика"))
 			return
@@ -341,6 +343,7 @@ type webState struct {
 	History  string        `json:"history"`
 	Certbot  bool          `json:"certbot"`
 	CertTime string        `json:"cert_time"`
+	Forwards []portForward `json:"forwards"`
 	Now      time.Time     `json:"now"`
 }
 
@@ -401,6 +404,10 @@ func (s *webServer) state(m *manager) (webState, error) {
 		}
 	}
 	out.History = tailFile(m.path("history.log"))
+	out.Forwards, _ = m.forwards()
+	if out.Forwards == nil {
+		out.Forwards = []portForward{}
+	}
 	hook, e := os.ReadFile(filepath.Join(m.system, "letsencrypt", "renewal-hooks", "pre", "50-vpswall"))
 	out.Certbot = e == nil && strings.Contains(string(hook), "# Managed by VPSWall")
 	timer, _ := os.ReadFile(filepath.Join(m.system, "systemd", "system", "vpswall-certbot.timer"))
@@ -413,23 +420,25 @@ func (s *webServer) state(m *manager) (webState, error) {
 }
 
 type webAction struct {
-	Op       string `json:"op"`
-	Revision string `json:"revision"`
-	ID       string `json:"id"`
-	Action   string `json:"action"`
-	Protocol string `json:"protocol"`
-	Port     string `json:"port"`
-	Source   string `json:"source"`
-	Comment  string `json:"comment"`
-	Priority int    `json:"priority"`
-	Kind     string `json:"kind"`
-	Clock    string `json:"clock"`
-	Zone     string `json:"zone"`
-	Duration string `json:"duration"`
-	Start    string `json:"start"`
-	Backend  string `json:"backend"`
-	Policy   string `json:"policy"`
-	Enabled  bool   `json:"enabled"`
+	Op         string `json:"op"`
+	Revision   string `json:"revision"`
+	ID         string `json:"id"`
+	Action     string `json:"action"`
+	Protocol   string `json:"protocol"`
+	Port       string `json:"port"`
+	Source     string `json:"source"`
+	Comment    string `json:"comment"`
+	Priority   int    `json:"priority"`
+	Kind       string `json:"kind"`
+	Clock      string `json:"clock"`
+	Zone       string `json:"zone"`
+	Duration   string `json:"duration"`
+	Start      string `json:"start"`
+	Backend    string `json:"backend"`
+	Policy     string `json:"policy"`
+	Enabled    bool   `json:"enabled"`
+	Target     string `json:"target"`
+	TargetPort string `json:"target_port"`
 }
 
 func (s *webServer) action(m *manager, a webAction) (string, *managerChange, error) {
@@ -578,6 +587,11 @@ func (s *webServer) action(m *manager, a webAction) (string, *managerChange, err
 		return "Состояние окна изменено", nil, m.pauseWindow(a.ID)
 	case "window-delete":
 		return "Окно удалено", nil, m.removeWindow(a.ID)
+	case "forward-add":
+		f := portForward{Protocol: a.Protocol, ListenPort: a.Port, Target: a.Target, TargetPort: a.TargetPort}
+		return "Пересылка добавлена", nil, m.addForward(f)
+	case "forward-delete":
+		return "Пересылка удалена", nil, m.removeForward(a.Protocol, a.Port)
 	case "backend":
 		return "Сетевой экран выбран", nil, m.selectBackend(a.Backend, a.Zone)
 	case "backup":
