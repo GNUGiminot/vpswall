@@ -1,4 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
+# Pin the patched compiler used for the release, including its standard library.
+$env:GOTOOLCHAIN = 'go1.26.11'
 Set-Location -LiteralPath $PSScriptRoot
 $env:GOCACHE = Join-Path $env:TEMP 'vpswall-go-cache'
 $env:GOTMPDIR = Join-Path $env:TEMP 'vpswall-go-tmp'
@@ -31,8 +33,8 @@ $taskBinarySums = @('vpswall-linux-amd64', 'vpswall-linux-arm64') | ForEach-Obje
     (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $_)).Hash.ToLowerInvariant() + '  ' + $_
 }
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'dist/SHA256SUMS'), (($taskBinarySums -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-$taskArchive = Join-Path $PSScriptRoot 'vpswall-0.4.0.zip'
-$taskFiles = @('go.mod', 'go.sum', 'README.md', 'CHANGELOG.md', 'install.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh', 'web/index.html', 'web/app.js', 'web/style.css')
+$taskArchive = Join-Path $PSScriptRoot 'vpswall-0.5.0.zip'
+$taskFiles = @('go.mod', 'go.sum', 'README.md', 'STRUCTURE.md', 'CHANGELOG.md', 'install.sh', 'start.sh', 'stop.sh', 'build.ps1', 'THIRD_PARTY_NOTICES.txt', 'dist', 'vendor') + @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.go' -File | ForEach-Object { $_.Name }) + @('tests/linux-lab.sh', 'tests/linux-lab-inner.sh', 'tests/release-smoke.sh', 'web/index.html', 'web/app.js', 'web/style.css')
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 if (Test-Path -LiteralPath $taskArchive) { Remove-Item -LiteralPath $taskArchive }
 $taskZip = [IO.Compression.ZipFile]::Open($taskArchive, [IO.Compression.ZipArchiveMode]::Create)
@@ -43,6 +45,11 @@ try {
                 $taskBinaryPath = Join-Path (Join-Path $PSScriptRoot 'dist') $taskBinary
                 [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($taskZip, $taskBinaryPath, "dist/$taskBinary", [IO.Compression.CompressionLevel]::Optimal)
             }
+        } elseif ($taskFile -eq 'vendor') {
+            foreach ($taskDependency in @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'vendor') -Recurse -File)) {
+                $taskRelative = $taskDependency.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
+                [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($taskZip, $taskDependency.FullName, $taskRelative, [IO.Compression.CompressionLevel]::Optimal)
+            }
         } else {
             [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($taskZip, (Join-Path $PSScriptRoot $taskFile), $taskFile, [IO.Compression.CompressionLevel]::Optimal)
         }
@@ -50,7 +57,7 @@ try {
 } finally {
     $taskZip.Dispose()
 }
-$taskHashLines = @('dist/vpswall-linux-amd64', 'dist/vpswall-linux-arm64', 'vpswall-0.4.0.zip') | ForEach-Object {
+$taskHashLines = @('dist/vpswall-linux-amd64', 'dist/vpswall-linux-arm64', 'vpswall-0.5.0.zip') | ForEach-Object {
     $taskHash = Get-FileHash -Algorithm SHA256 -LiteralPath $_
     $taskHash.Hash.ToLowerInvariant() + '  ' + $_
 }

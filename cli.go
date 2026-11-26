@@ -19,8 +19,16 @@ func demoManager() (*manager, error) {
 		if name == "systemctl" && len(args) > 0 && args[0] == "is-enabled" {
 			return "enabled\n", nil
 		}
+		if name == "ss" {
+			return "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=42,fd=3))\n" +
+				"tcp LISTEN 0 128 [::]:443 [::]:* users:((\"nginx\",pid=43,fd=4))\n" +
+				"udp UNCONN 0 0 127.0.0.1:5353 0.0.0.0:*\n", nil
+		}
 		if name == "ufw" {
-			return "Status: active\nDefault: deny (incoming)\n\n[ 1] 22/tcp  ALLOW IN 192.0.2.40\n[ 2] 443/tcp ALLOW IN Anywhere", nil
+			if len(args) > 1 && args[0] == "show" {
+				return "ufw allow 8080/tcp comment 'Console service'", nil
+			}
+			return "Status: active\nDefault: deny (incoming)\n\n[ 1] 22/tcp                     ALLOW IN    192.0.2.40\n[ 2] 443/tcp                    ALLOW IN    Anywhere\n[ 3] 8080/tcp                   ALLOW IN    Anywhere # Console service", nil
 		}
 		return "Демонстрационный режим: системные команды не выполняются.", nil
 	}
@@ -44,7 +52,7 @@ func main() {
 		return
 	}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "help") {
-		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nsudo vpswall forward list                  Пересылки портов на другие серверы\nsudo vpswall forward add udp|tcp PORT IP [PORT]\nsudo vpswall forward del udp|tcp PORT\nsudo vpswall web enable / disable          Локальный веб-сервис\nsudo --preserve-env=SSH_CONNECTION vpswall web token\nvpswall web --demo                         Демонстрация веб-панели\nУстановка: sudo sh ./install.sh")
+		fmt.Println("VPSWall " + version + " — UFW / firewalld / nftables / iptables\n\nsudo --preserve-env=SSH_CONNECTION vpswall   Терминальная панель\nvpswall --demo                             Безопасная демонстрация UI\nsudo vpswall status                        Состояние и системные правила\nsudo vpswall ports                         Текущие порты и правила системы\nsudo vpswall confirm CODE                  Подтвердить из нового SSH\nsudo vpswall rollback                      Отменить изменение\nsudo vpswall worker                        Обработать окна портов\nsudo vpswall certbot-open / certbot-close   Хуки Certbot\nsudo vpswall forward list                  Пересылки портов на другие серверы\nsudo vpswall forward add udp|tcp PORT IP [PORT]\nsudo vpswall forward del udp|tcp PORT\nsudo vpswall web enable / disable          Локальный веб-сервис\nsudo --preserve-env=SSH_CONNECTION vpswall web token\nvpswall web --demo                         Демонстрация веб-панели\nУстановка: sudo sh ./install.sh")
 		return
 	}
 	webDemo := len(args) == 2 && args[0] == "web" && args[1] == "--demo"
@@ -107,6 +115,8 @@ func main() {
 			fail(fmt.Errorf("осталось изменение версии 0.1.0: подтвердите его через confirm %s или выполните rollback", p.Token))
 		}
 		_, e = tea.NewProgram(newUI(m), tea.WithAltScreen()).Run()
+	case len(args) == 1 && args[0] == "ports":
+		fmt.Print(m.inventory().text())
 	case len(args) == 1 && args[0] == "status":
 		fmt.Println(m.summary())
 		c, err := m.config()

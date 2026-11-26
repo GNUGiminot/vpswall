@@ -63,9 +63,7 @@ func newUI(m *manager) uiModel {
 	s.Style = titleStyle
 	u := uiModel{m: m, screen: "home", width: 100, height: 32, spin: s, output: viewport.New(80, 18)}
 	u.reload()
-	if u.config.Backend == "" {
-		u.screen = "backend"
-	}
+
 	u.populate()
 	return u
 }
@@ -109,6 +107,7 @@ func (u *uiModel) populate() {
 			{"Веб-панель", "Локальный сервис, SSH-туннель и токен доступа", "web", ""},
 		}
 	case "backend":
+		u.items = append(u.items, uiItem{"Текущие порты и правила системы", "Просмотр без выбора и включения firewall", "raw", ""})
 		for _, b := range []string{"ufw", "firewalld", "nftables", "iptables"} {
 			descs := map[string]string{"ufw": "Простой firewall для Ubuntu/Debian", "firewalld": "Зоны, службы и rich rules", "nftables": "Современные таблицы и атомарное применение", "iptables": "Совместимость с существующими Linux-системами"}
 			label := strings.ToUpper(b)
@@ -120,6 +119,7 @@ func (u *uiModel) populate() {
 		u.items = append(u.items, uiItem{"Зона firewalld", "По умолчанию public; выбирайте зону своего интерфейса", "zone", ""})
 	case "rules":
 		u.items = append(u.items, uiItem{"＋ Добавить правило", "Разрешить / запретить / отклонить TCP или UDP", "add", ""})
+		u.items = append(u.items, uiItem{"Текущие порты и правила системы", "Включая правила, добавленные из консоли; только просмотр", "raw", ""})
 		for _, r := range sortedRules(u.config.Rules) {
 			title := fmt.Sprintf("%s  %s/%s  ← %s", actionLabel(r.Action), r.Port, r.Protocol, r.Source)
 			u.items = append(u.items, uiItem{title, fmt.Sprintf("приоритет %d · %s", r.Priority, r.Comment), "rule", r.ID})
@@ -532,7 +532,7 @@ func (u *uiModel) activate() tea.Cmd {
 	case "web-token":
 		u.review("Выдать новый токен?", "Токен действует 8 часов. Предыдущий токен станет недействительным.\nНе передавайте его другим людям.", "web", func() (string, error) {
 			token, e := m.issueWebToken()
-			return "Токен доступа:\n\n" + token + "\n\nВставьте его в локальную веб-панель.\nТокен связан с текущим SSH-подключением.", e
+			return "Токен доступа:\n\n" + token + "\n\nВставьте его в локальную веб-панель.\nТокен действует 8 часов и не привязан к соединению; храните его в секрете.", e
 		})
 	case "ports":
 		return u.operation("Читаю порты", "diagnostics", func() (string, error) { return m.run("ss", "-lntup") })

@@ -16,8 +16,9 @@ import (
 
 var zonePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 var binaryPaths = map[string][]string{
-	"sshd": {"/usr/sbin/sshd"},
-	"ufw":  {"/usr/sbin/ufw"}, "systemctl": {"/usr/bin/systemctl"}, "systemd-run": {"/usr/bin/systemd-run"}, "cp": {"/usr/bin/cp"},
+	"sshd":   {"/usr/sbin/sshd"},
+	"sysctl": {"/usr/sbin/sysctl", "/sbin/sysctl"},
+	"ufw":    {"/usr/sbin/ufw"}, "systemctl": {"/usr/bin/systemctl"}, "systemd-run": {"/usr/bin/systemd-run"}, "cp": {"/usr/bin/cp"},
 	"ss": {"/usr/bin/ss", "/usr/sbin/ss"}, "journalctl": {"/usr/bin/journalctl"},
 	"firewall-cmd": {"/usr/bin/firewall-cmd"}, "firewall-offline-cmd": {"/usr/bin/firewall-offline-cmd"},
 	"nft": {"/usr/sbin/nft", "/sbin/nft"}, "iptables": {"/usr/sbin/iptables", "/sbin/iptables"}, "ip6tables": {"/usr/sbin/ip6tables", "/sbin/ip6tables"},
@@ -195,32 +196,7 @@ func (m *manager) installBackend(b string) error {
 	return e
 }
 func (m *manager) rawStatus(c managerConfig) (string, error) {
-	switch c.Backend {
-	case "ufw":
-		a, e := m.run("ufw", "status", "verbose")
-		if e != nil {
-			return a, e
-		}
-		b, e := m.run("ufw", "status", "numbered")
-		return a + "\n" + b, e
-	case "firewalld":
-		a, e := m.run("firewall-cmd", "--get-active-zones")
-		if e != nil {
-			return a, e
-		}
-		b, e := m.run("firewall-cmd", "--zone="+c.Zone, "--list-all")
-		return a + "\n" + b, e
-	case "nftables":
-		return m.run("nft", "-a", "list", "ruleset")
-	case "iptables":
-		a, e := m.run("iptables", "-S")
-		if e != nil {
-			return a, e
-		}
-		b, e := m.run("ip6tables", "-S")
-		return "IPv4\n" + a + "\nIPv6\n" + b, e
-	}
-	return "Сначала выберите сетевой экран", nil
+	return m.inventory().text(), nil
 }
 func (m *manager) applyBackend(c managerConfig, wanted []managedRule, old ownedBook) error {
 	if m.demo {

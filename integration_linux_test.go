@@ -602,3 +602,82 @@ func TestIntegrationCertbotUnitFiles(t *testing.T) {
 		t.Fatal(e, string(out))
 	}
 }
+
+// Regression: an administrator's console rule must be visible on a fresh install
+// without selecting a VPSWall backend or adopting/changing the rule.
+func TestIntegrationInventoryConsoleRules(t *testing.T) {
+	requireLab(t)
+	resetKernel(t)
+	peerNetwork(t)
+	mustRun(t, "ufw", "--force", "reset")
+	mustRun(t, "ufw", "allow", "8080/tcp", "comment", "console-service")
+	mustRun(t, "ufw", "--force", "enable")
+	m := liveManager(t, "ufw")
+	if e := os.Remove(m.path("manager.json")); e != nil {
+		t.Fatal(e)
+	}
+	before := mustRun(t, "ufw", "show", "added")
+	inv := m.inventory()
+	if !strings.Contains(inv.text(), "8080/tcp") || !strings.Contains(inv.text(), "console-service") {
+		t.Fatal(inv.text())
+	}
+	found := false
+	for _, p := range inv.Listeners {
+		if p.Port == "8080" && p.Protocol == "tcp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("native listener missing", inv.Listeners, inv.Errors)
+	}
+	nativeRule := false
+	for _, f := range inv.Firewalls {
+		for _, r := range f.Rules {
+			if r.Destination == "8080/tcp" && r.Comment == "console-service" {
+				nativeRule = true
+			}
+		}
+	}
+	if !nativeRule {
+		t.Fatal("console UFW rule missing from readable table", inv.text())
+	}
+
+	if len(inv.Errors) != 0 {
+		t.Fatal(inv.Errors)
+	}
+	after := mustRun(t, "ufw", "show", "added")
+	if before != after {
+		t.Fatal("inventory changed the administrator rule", before, after)
+	}
+	if _, e := os.Stat(m.path("manager.json")); !os.IsNotExist(e) {
+		t.Fatal("inventory selected a backend", e)
+	}
+	probePort(t, "8080", true)
+	mustRun(t, "ufw", "--force", "disable")
+	inv = m.inventory()
+	if !strings.Contains(inv.text(), "console-service") || !strings.Contains(inv.text(), "Status: inactive") {
+		t.Fatal("inactive saved rules hidden", inv.text())
+	}
+}
+
+func TestIntegrationForwardNativeApply(t *testing.T) {
+	requireLab(t)
+	resetKernel(t)
+	m := liveManager(t, "iptables")
+	if err := m.addForward(portForward{Protocol: "udp", ListenPort: "40000", Target: "192.0.2.10", TargetPort: "40001"}); err != nil {
+		t.Fatal(err)
+	}
+	out := mustRun(t, "iptables-save")
+	if !strings.Contains(out, "--dport 40000 -j DNAT --to-destination 192.0.2.10:40001") && !(strings.Contains(out, "--dport 40000") && strings.Contains(out, "--to-destination 192.0.2.10:40001")) {
+		t.Fatal(out)
+	}
+	if out := mustRun(t, "sysctl", "-n", "net.ipv4.ip_forward"); strings.TrimSpace(out) != "1" {
+		t.Fatal(out)
+	}
+	if err := m.removeForward("udp", "40000"); err != nil {
+		t.Fatal(err)
+	}
+	if out := mustRun(t, "iptables-save"); strings.Contains(out, "--dport 40000") {
+		t.Fatal("deleted forward still active", out)
+	}
+}

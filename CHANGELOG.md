@@ -1,5 +1,27 @@
 # Журнал изменений VPSWall
 
+## 0.5.0 — 2026-11-26
+
+- Show native firewall rules and listening TCP/UDP ports on the main web page,
+  including rules added from the console before VPSWall was installed or configured.
+- Render numbered UFW rules as a readable table preserving IPv6, interfaces,
+  source restrictions, direction and comments. Keep administrator rules read-only.
+- Inspect every installed firewall: UFW active/saved rules and policies, firewalld
+  runtime/permanent zones and direct rules, full nftables ruleset, all IPv4/IPv6
+  iptables tables including NAT. Keep native output for complex conditions.
+- Add `vpswall ports`; expand CLI/TUI system overview without requiring backend selection.
+- Distinguish listening sockets, firewall permissions and external reachability;
+  show collection errors, timestamps and truncation instead of misleading empty results.
+- Cache authenticated web observations for 10 seconds outside the firewall mutation lock.
+- Fix forwarding on Linux by allowing the sysctl executable, reject forwarding when
+  socket inspection fails, and restore the previous forwarding configuration/rules
+  when an apply fails. Log successful changes only after applying them.
+- Build with patched Go 1.26.11 to address known standard-library vulnerabilities;
+  update golang.org/x/sys to v0.50.0 and golang.org/x/text to v0.44.0.
+- Include vendored Go dependencies and licenses for offline module builds.
+- Add regression tests and isolated Linux checks for console rules and native forwarding,
+  plus an offline smoke test running the extracted release outside the source tree.
+
 ## 0.4.0 — 2026-11-17
 
 ### Безопасность доступа по SSH

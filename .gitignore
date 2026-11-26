@@ -41,3 +41,6 @@ change.json
 Thumbs.db
 *.tmp
 *.swp
+
+# Private conversation exports
+/conversations/

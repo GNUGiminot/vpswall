@@ -130,9 +130,12 @@ func publicPending(p *managerChange) *webPending {
 }
 
 type webServer struct {
-	m   *manager
-	mu  sync.Mutex
-	job webJob
+	m                 *manager
+	mu                sync.Mutex
+	job               webJob
+	inventoryMu       sync.Mutex
+	inventoryCache    systemInventory
+	inventoryCachedAt time.Time
 }
 
 func webJSON(w http.ResponseWriter, status int, v any) {
@@ -334,22 +337,23 @@ type webWindow struct {
 	Next   time.Time `json:"next"`
 }
 type webState struct {
-	Config   managerConfig `json:"config"`
-	Revision string        `json:"revision"`
-	Windows  []webWindow   `json:"windows"`
-	Pending  *webPending   `json:"pending"`
-	Demo     bool          `json:"demo"`
-	Host     string        `json:"host"`
-	Version  string        `json:"version"`
-	SSHPort  string        `json:"ssh_port"`
-	Backups  []string      `json:"backups"`
-	History  string        `json:"history"`
-	Certbot  bool          `json:"certbot"`
-	CertTime string        `json:"cert_time"`
-	Forwards []portForward `json:"forwards"`
-	Now      time.Time     `json:"now"`
-	Alert    string        `json:"alert,omitempty"`
-	Warnings []string      `json:"warnings,omitempty"`
+	Config    managerConfig   `json:"config"`
+	Revision  string          `json:"revision"`
+	Windows   []webWindow     `json:"windows"`
+	Pending   *webPending     `json:"pending"`
+	Demo      bool            `json:"demo"`
+	Host      string          `json:"host"`
+	Version   string          `json:"version"`
+	SSHPort   string          `json:"ssh_port"`
+	Backups   []string        `json:"backups"`
+	History   string          `json:"history"`
+	Certbot   bool            `json:"certbot"`
+	CertTime  string          `json:"cert_time"`
+	Forwards  []portForward   `json:"forwards"`
+	Now       time.Time       `json:"now"`
+	Alert     string          `json:"alert,omitempty"`
+	Warnings  []string        `json:"warnings,omitempty"`
+	Inventory systemInventory `json:"inventory"`
 }
 
 func tailFile(path string) string {
@@ -405,6 +409,7 @@ func (s *webServer) state(m *manager) (webState, error) {
 		out.Warnings = append(out.Warnings, w)
 	}
 	out.Alert = m.alert()
+	out.Inventory = s.systemInventory()
 	entries, _ := os.ReadDir(m.path("managed-backups"))
 	for _, entry := range entries {
 		id := strings.TrimSuffix(entry.Name(), ".json")
