@@ -157,12 +157,12 @@ func (m *manager) applyForwards() error {
 	return nil
 }
 
-func (m *manager) portBusy(proto, port string) bool {
+func (m *manager) portBusy(proto, port string) (bool, error) {
 	if m.demo {
-		return false
+		return false, nil
 	}
-	out, _ := m.run("ss", "-H", "-ln"+proto[:1], "sport = :"+port)
-	return strings.TrimSpace(out) != ""
+	out, err := m.run("ss", "-H", "-ln"+proto[:1], "sport", "=", ":"+port)
+	return strings.TrimSpace(out) != "", err
 }
 
 func (m *manager) addForward(f portForward) error {
@@ -185,14 +185,18 @@ func (m *manager) addForward(f portForward) error {
 		if ssh, e := sshRule(m.ssh); e == nil && f.Protocol == "tcp" && ssh.Port == f.ListenPort {
 			return errors.New("это текущий SSH-порт; пересылка отрезала бы доступ")
 		}
-		if m.portBusy(f.Protocol, f.ListenPort) {
+		busy, err := m.portBusy(f.Protocol, f.ListenPort)
+		if err != nil {
+			return fmt.Errorf("не удалось проверить занятость порта: %w", err)
+		}
+		if busy {
 			return fmt.Errorf("порт %s/%s уже занят службой на этом сервере", f.ListenPort, f.Protocol)
 		}
-		if e = m.writeForwards(append(list, f)); e != nil {
+		if e = m.updateForwards(list, append(append([]portForward{}, list...), f)); e != nil {
 			return e
 		}
 		m.log("FORWARD ADD " + f.String())
-		return m.applyForwards()
+		return nil
 	})
 }
 
@@ -214,11 +218,11 @@ func (m *manager) removeForward(proto, port string) error {
 		if removed == nil {
 			return errors.New("пересылка не найдена")
 		}
-		if e = m.writeForwards(kept); e != nil {
+		if e = m.updateForwards(list, kept); e != nil {
 			return e
 		}
 		m.log("FORWARD DELETE " + removed.String())
-		return m.applyForwards()
+		return nil
 	})
 }
 
@@ -247,4 +251,23 @@ func (m *manager) forwardSummary() (string, error) {
 		b.WriteString("\n" + out)
 	}
 	return b.String(), nil
+}
+
+// Restore both the persisted list and kernel rules if an apply fails midway.
+func (m *manager) updateForwards(before, after []portForward) error {
+	if err := m.writeForwards(after); err != nil {
+		return err
+	}
+	if err := m.applyForwards(); err != nil {
+		if restore := m.writeForwards(before); restore != nil {
+			m.setAlert("Пересылка не применена; конфигурация не восстановлена: " + restore.Error())
+			return fmt.Errorf("%w; восстановление конфигурации: %v", err, restore)
+		}
+		if restore := m.applyForwards(); restore != nil {
+			m.setAlert("Пересылка не применена; проверьте системные правила: " + restore.Error())
+			return fmt.Errorf("%w; восстановление правил: %v", err, restore)
+		}
+		return err
+	}
+	return nil
 }
